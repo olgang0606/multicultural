@@ -28,43 +28,64 @@ st.markdown("""
         border-left: 5px solid #2563EB;
         margin-bottom: 1rem;
     }
-    .key-badge {
-        background-color: #E0E7FF;
-        color: #3730A3;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.85rem;
-        font-weight: 600;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 1. API Key Helper Functions
+# 1. Helper Functions (API Key Load & Solar API Call)
 # -----------------------------------------------------------------------------
-def get_api_key(key_name: str) -> str:
-    """Streamlit secrets에서 API 키를 안전하게 불러오는 함수"""
+def get_secret(key_name: str) -> str:
+    """secrets.toml 또는 Streamlit Cloud Secrets에서 키 로드"""
     if key_name in st.secrets:
         return st.secrets[key_name]
     return ""
 
-def render_api_status(key_name: str, key_value: str):
-    """API 키 등록 상태 및 안내 표시 UI"""
-    if key_value:
-        masked_key = key_value[:4] + "*" * (len(key_value) - 4) if len(key_value) > 4 else "****"
-        st.sidebar.success(f"🔑 **{key_name}**: 연동됨 (`{masked_key}`)")
-    else:
-        st.sidebar.warning(f"⚠️ **{key_name}**: 미설정")
+def ask_solar_api(data_text: str, user_query: str) -> str:
+    """Upstage Solar API를 호출하여 입력 자료에 기반한 한국어 답변 생성"""
+    solar_key = get_secret("SOLAR_API_KEY")
+    if not solar_key:
+        return "⚠️ `SOLAR_API_KEY`가 설정되어 있지 않습니다. Secrets에 API 키를 등록해주세요."
+
+    system_prompt = f"""당신은 아래 제공된 다문화 관련 조사 자료만을 근거로 사용자의 질문에 정확하고 명확하게 한국어로 답변하는 전문 연구 보조 AI입니다.
+
+[지침]
+1. 반드시 제공된 [근거 자료] 내용을 기반으로만 답변하세요.
+2. 자료에 명시되어 있지 않은 내용은 억지로 추측하지 말고 "제공된 자료에서 해당 내용을 찾을 수 없습니다."라고 안내하세요.
+3. 한국어로 이해하기 쉽고 명확한 구조로 답변하세요.
+
+[근거 자료]:
+{data_text}"""
+
+    url = "https://api.upstage.ai/v1/solar/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {solar_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "solar-pro",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query}
+        ],
+        "temperature": 0.2
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        if response.status_code == 200:
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+        else:
+            return f"❌ Solar API 호출 오류 (코드: {response.status_code}): {response.text}"
+    except Exception as e:
+        return f"❌ API 연결 중 오류가 발생했습니다: {str(e)}"
 
 # -----------------------------------------------------------------------------
-# Dummy Data Generators (실제 API 호출 성공 시 대체되는 샘플 로직)
+# 2. Dummy Data Generators
 # -----------------------------------------------------------------------------
 @st.cache_data
-def fetch_youth_panel_data(api_key: str):
-    """1. 다문화청소년패널조사 API 호출 모사"""
-    # 실제 API 적용 시:
-    # response = requests.get(f"https://api.example.com/youth?serviceKey={api_key}")
-    # return pd.DataFrame(response.json())
+def fetch_youth_panel_data():
+    """1. 다문화청소년패널조사 마이크로데이터"""
     np.random.seed(42)
     n = 300
     return pd.DataFrame({
@@ -77,8 +98,8 @@ def fetch_youth_panel_data(api_key: str):
     })
 
 @st.cache_data
-def fetch_acceptability_data(api_key: str):
-    """2. 국민 다문화수용성실태조사 API 호출 모사"""
+def fetch_acceptability_data():
+    """2. 국민 다문화수용성실태조사 마이크로데이터"""
     np.random.seed(101)
     n = 500
     return pd.DataFrame({
@@ -92,8 +113,8 @@ def fetch_acceptability_data(api_key: str):
     })
 
 @st.cache_data
-def fetch_family_survey_data(api_key: str):
-    """3. 전국다문화가족실태조사 API 호출 모사"""
+def fetch_family_survey_data():
+    """3. 전국다문화가족실태조사 마이크로데이터"""
     np.random.seed(202)
     n = 400
     years = [2018, 2021, 2024]
@@ -116,50 +137,32 @@ def fetch_family_survey_data(api_key: str):
     return pd.DataFrame(rows)
 
 # -----------------------------------------------------------------------------
-# Sidebar & Page Navigation
+# 3. Sidebar Page Navigation
 # -----------------------------------------------------------------------------
 st.sidebar.title("📌 조사별 전용 페이지")
-
-# API Keys Load
-key1 = get_api_key("MULTI1_API_KEY")
-key2 = get_api_key("MULTI2_API_KEY")
-key3 = get_api_key("MULTI3_API_KEY")
 
 page = st.sidebar.radio(
     "이동할 페이지를 선택하세요:",
     [
-        "Page 1. 다문화청소년패널조사 (Key 1)",
-        "Page 2. 국민 다문화수용성실태조사 (Key 2)",
-        "Page 3. 전국다문화가족실태조사 (Key 3)",
-        "Page 4. 3개 조사 종합 비교·분석"
+        "1. 다문화청소년패널조사",
+        "2. 국민 다문화수용성실태조사",
+        "3. 전국다문화가족실태조사",
+        "4. 3개 조사 종합 비교·분석"
     ]
 )
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔑 API Key 연동 현황")
-render_api_status("MULTI1_API_KEY", key1)
-render_api_status("MULTI2_API_KEY", key2)
-render_api_status("MULTI3_API_KEY", key3)
-
 # -----------------------------------------------------------------------------
-# PAGE 1: 다문화청소년패널조사 (MULTI1_API_KEY 사용)
+# PAGE 1: 다문화청소년패널조사
 # -----------------------------------------------------------------------------
-if page == "Page 1. 다문화청소년패널조사 (Key 1)":
-    st.markdown("<div class='main-header'>🌱 Page 1: 다문화청소년패널조사</div>", unsafe_allow_html=True)
-    st.markdown("사용 인증키: `<span class='key-badge'>MULTI1_API_KEY</span>`", unsafe_allow_html=True)
+if page == "1. 다문화청소년패널조사":
+    st.markdown("<div class='main-header'>🌱 다문화청소년패널조사</div>", unsafe_allow_html=True)
     
-    st.markdown("""
-    <div class='card'>
-    <b>조사 개요:</b> 다문화청소년과 그 보호자를 대상으로 개인적 특성, 다문화 관련 경험, 가정·학교·지역사회 환경 요인을 종단 분석합니다.
-    </div>
-    """, unsafe_allow_html=True)
+    info_text = """다문화가정의 지속적인 증가라는 사회적 변화 속에서 다문화청소년의 성장과 발달 특성을 체계적으로 분석하기 위해 구축된 종단 조사 자료입니다. 본 조사는 다문화청소년과 그 보호자를 대상으로 개인적 특성, 다문화 관련 경험과 인식, 가정·학교·지역사회 등 환경 요인을 주요 변인으로 설정하여 반복적으로 조사합니다. 이를 통해 다문화청소년의 정체성 형성, 적응 과정, 발달 특성 및 생활 여건의 변화를 장기적으로 파악할 수 있으며, 다문화 정책 수립, 제도 개선, 학술 연구 및 통계 분석을 위한 핵심 기초 자료로 활용됩니다."""
+    
+    st.markdown(f"<div class='card'><b>조사 개요:</b><br>{info_text}</div>", unsafe_allow_html=True)
 
-    if not key1:
-        st.info("💡 `secrets.toml` 또는 Streamlit Cloud Secrets에 `MULTI1_API_KEY`를 설정하면 실시간 API 데이터가 연결됩니다. (현재는 샘플 데이터로 동작 중입니다)")
+    df = fetch_youth_panel_data()
 
-    df = fetch_youth_panel_data(key1)
-
-    # 필터 옵션
     col1, col2 = st.columns(2)
     with col1:
         wave_filter = st.multiselect("조사차수 선택", options=df["조사차수"].unique(), default=df["조사차수"].unique()[:2])
@@ -168,8 +171,7 @@ if page == "Page 1. 다문화청소년패널조사 (Key 1)":
 
     filtered_df = df[(df["조사차수"].isin(wave_filter)) & (df["지역"].isin(region_filter))]
 
-    # 지표 및 시각화
-    st.subheader("📈 주요 지표")
+    st.subheader("📈 주요 핵심 지표")
     m1, m2, m3 = st.columns(3)
     m1.metric("분석 대상 인원", f"{len(filtered_df):,} 명")
     m2.metric("평균 학교적응도", f"{filtered_df['학교적응도 (5점)'].mean():.2f} / 5.0")
@@ -186,23 +188,32 @@ if page == "Page 1. 다문화청소년패널조사 (Key 1)":
     with st.expander("📄 마이크로데이터 상세 조회"):
         st.dataframe(filtered_df, use_container_width=True)
 
+    # Solar AI Q&A Section
+    st.markdown("---")
+    st.subheader("🤖 Solar AI 기반 자료 Q&A")
+    user_q = st.text_input("위 조사 자료를 근거로 궁금한 점을 질문하세요:", placeholder="예: 다문화청소년패널조사의 주요 목적과 활용 방안은 무엇인가요?")
+    
+    if st.button("확인하기", key="btn_p1"):
+        if user_q.strip():
+            context = f"{info_text}\n\n[통계 요약 데이터]\n" + filtered_df.describe().to_string()
+            with st.spinner("Solar AI가 자료를 바탕으로 답변을 분석 중입니다..."):
+                answer = ask_solar_api(context, user_q)
+            st.markdown("### 💬 AI 답변")
+            st.write(answer)
+        else:
+            st.warning("질문을 입력해주세요.")
+
 # -----------------------------------------------------------------------------
-# PAGE 2: 국민 다문화수용성실태조사 (MULTI2_API_KEY 사용)
+# PAGE 2: 국민 다문화수용성실태조사
 # -----------------------------------------------------------------------------
-elif page == "Page 2. 국민 다문화수용성실태조사 (Key 2)":
-    st.markdown("<div class='main-header'>🌏 Page 2: 국민 다문화수용성실태조사</div>", unsafe_allow_html=True)
-    st.markdown("사용 인증키: `<span class='key-badge'>MULTI2_API_KEY</span>`", unsafe_allow_html=True)
+elif page == "2. 국민 다문화수용성실태조사":
+    st.markdown("<div class='main-header'>🌏 국민 다문화수용성실태조사</div>", unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class='card'>
-    <b>조사 개요:</b> 외국인 거주 태도, 이웃 수용성, 진정한 한국인 인정 성향, 외국이주민 공직 출마 인식 등을 성별·연령·지역별로 분석합니다.
-    </div>
-    """, unsafe_allow_html=True)
+    info_text = """성별, 연령별, 지역별로 다문화 다양성 차원에 대한 응답, 외국인 거주에 대한 태도, 이웃으로 삼을 수 있는지의 여부, 진정한 한국인으로 인정 가능성에 대한 인식, 외국이주민의 공직 출마에 대한 인식 등의 통계조사 결과를 확인할 수 있습니다. 다문화에 대한 국민의 인식과 태도를 성별·연령·지역 등 다양한 특성별로 분석할 수 있어, 정책 대상별 맞춤형 사회통합 전략 수립에 활용됩니다. 또한 외국인에 대한 수용성 및 인식 변화 등을 파악하여 다문화 사회에 대한 이해 증진과 관련 제도 개선, 교육 및 홍보 자료 개발 등에 유익하게 활용될 수 있습니다."""
 
-    if not key2:
-        st.info("💡 `secrets.toml` 또는 Streamlit Cloud Secrets에 `MULTI2_API_KEY`를 설정하면 실시간 API 데이터가 연결됩니다. (현재는 샘플 데이터로 동작 중입니다)")
+    st.markdown(f"<div class='card'><b>조사 개요:</b><br>{info_text}</div>", unsafe_allow_html=True)
 
-    df = fetch_acceptability_data(key2)
+    df = fetch_acceptability_data()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -228,23 +239,32 @@ elif page == "Page 2. 국민 다문화수용성실태조사 (Key 2)":
     with st.expander("📄 마이크로데이터 상세 조회"):
         st.dataframe(filtered_df, use_container_width=True)
 
+    # Solar AI Q&A Section
+    st.markdown("---")
+    st.subheader("🤖 Solar AI 기반 자료 Q&A")
+    user_q = st.text_input("위 조사 자료를 근거로 궁금한 점을 질문하세요:", placeholder="예: 국민 다문화수용성 조사는 어떤 용도로 활용되나요?")
+    
+    if st.button("확인하기", key="btn_p2"):
+        if user_q.strip():
+            context = f"{info_text}\n\n[통계 요약 데이터]\n" + filtered_df.describe().to_string()
+            with st.spinner("Solar AI가 자료를 바탕으로 답변을 분석 중입니다..."):
+                answer = ask_solar_api(context, user_q)
+            st.markdown("### 💬 AI 답변")
+            st.write(answer)
+        else:
+            st.warning("질문을 입력해주세요.")
+
 # -----------------------------------------------------------------------------
-# PAGE 3: 전국다문화가족실태조사 (MULTI3_API_KEY 사용)
+# PAGE 3: 전국다문화가족실태조사
 # -----------------------------------------------------------------------------
-elif page == "Page 3. 전국다문화가족실태조사 (Key 3)":
-    st.markdown("<div class='main-header'>🏠 Page 3: 전국다문화가족실태조사</div>", unsafe_allow_html=True)
-    st.markdown("사용 인증키: `<span class='key-badge'>MULTI3_API_KEY</span>`", unsafe_allow_html=True)
+elif page == "3. 전국다문화가족실태조사":
+    st.markdown("<div class='main-header'>🏠 전국다문화가족실태조사</div>", unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class='card'>
-    <b>조사 개요:</b> 실태조사연도, 대상, 항목명, 실태조사값 등 정밀한 마이크로데이터를 제공하여 다문화가족 정책의 세부 인사이트를 도출합니다.
-    </div>
-    """, unsafe_allow_html=True)
+    info_text = """실태조사연도, 실태조사대상 일련번호, 실태조사대상명, 실태조사항목명, 실태조사값, 데이터 기준 일자 등의 내용을 확인할 수 있습니다. 조사 항목별 응답 데이터를 세분화된 수준에서 분석할 수 있습니다. 실태조사 대상별 일련번호와 항목명이 포함되어 있어, 특정 연도나 특정 그룹에 대한 비교·분석이 가능해 정책 기획의 정밀도를 높일 수 있습니다. 또한 실태조사값을 활용하여 데이터 기반의 인사이트 도출이 가능하며, 다문화 가족 정책의 개선과 현황 분석자료로도 활용될 수 있습니다."""
 
-    if not key3:
-        st.info("💡 `secrets.toml` 또는 Streamlit Cloud Secrets에 `MULTI3_API_KEY`를 설정하면 실시간 API 데이터가 연결됩니다. (현재는 샘플 데이터로 동작 중입니다)")
+    st.markdown(f"<div class='card'><b>조사 개요:</b><br>{info_text}</div>", unsafe_allow_html=True)
 
-    df = fetch_family_survey_data(key3)
+    df = fetch_family_survey_data()
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -271,35 +291,63 @@ elif page == "Page 3. 전국다문화가족실태조사 (Key 3)":
     with st.expander("📄 마이크로데이터 상세 목록"):
         st.dataframe(filtered_df, use_container_width=True)
 
+    # Solar AI Q&A Section
+    st.markdown("---")
+    st.subheader("🤖 Solar AI 기반 자료 Q&A")
+    user_q = st.text_input("위 조사 자료를 근거로 궁금한 점을 질문하세요:", placeholder="예: 전국다문화가족실태조사의 주요 항목과 정책적 효과는 무엇인가요?")
+    
+    if st.button("확인하기", key="btn_p3"):
+        if user_q.strip():
+            context = f"{info_text}\n\n[선택 항목 데이터 요약]\n" + filtered_df.to_string()
+            with st.spinner("Solar AI가 자료를 바탕으로 답변을 분석 중입니다..."):
+                answer = ask_solar_api(context, user_q)
+            st.markdown("### 💬 AI 답변")
+            st.write(answer)
+        else:
+            st.warning("질문을 입력해주세요.")
+
 # -----------------------------------------------------------------------------
 # PAGE 4: 3개 조사 종합 비교·분석
 # -----------------------------------------------------------------------------
 else:
-    st.markdown("<div class='main-header'>📊 Page 4: 3개 조사 통합 비교 및 인사이트</div>", unsafe_allow_html=True)
-    st.write("각 페이지에서 호출한 3개 마이크로데이터를 교차 분석하여 정책 인사이트를 도출합니다.")
+    st.markdown("<div class='main-header'>📊 3개 조사 통합 비교 및 인사이트</div>", unsafe_allow_html=True)
+    st.write("3가지 다문화 실태 및 마이크로데이터 통합 정보입니다.")
 
-    df1 = fetch_youth_panel_data(key1)
-    df2 = fetch_acceptability_data(key2)
-    df3 = fetch_family_survey_data(key3)
+    text1 = "1. 다문화청소년패널조사: 청소년과 보호자의 정체성 형성, 학교적응 및 환경 요인을 장기 파악하여 정책 기초자료로 활용."
+    text2 = "2. 국민 다문화수용성실태조사: 성별·연령·지역별 외국인 이웃/거주 수용성 및 공직 출마 인식 분석을 통한 맞춤형 사회통합 전략 수립."
+    text3 = "3. 전국다문화가족실태조사: 연도, 대상, 항목별 마이크로데이터 분석을 통해 정책 정밀도를 제고하고 다문화가족 현황 개선."
+
+    combined_context = f"{text1}\n{text2}\n{text3}"
+
+    st.markdown(f"""
+    <div class='card'>
+    <b>통합 개요:</b><br>
+    • {text1}<br>
+    • {text2}<br>
+    • {text3}
+    </div>
+    """, unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.info("🌱 **다문화청소년패널**")
-        st.write(f"- Key1 상태: {'✅ 연동' if key1 else '⚠️ 미설정'}")
-        st.write(f"- 분석 데이터: {len(df1):,} 건")
+        st.info("🌱 **청소년패널조사**")
+        st.write("청소년 발달 및 정체성 적응")
     with c2:
-        st.info("🌏 **국민수용성실태**")
-        st.write(f"- Key2 상태: {'✅ 연동' if key2 else '⚠️ 미설정'}")
-        st.write(f"- 분석 데이터: {len(df2):,} 건")
+        st.info("🌏 **국민수용성조사**")
+        st.write("사회적 수용성 및 인식 개선")
     with c3:
         st.info("🏠 **다문화가족실태**")
-        st.write(f"- Key3 상태: {'✅ 연동' if key3 else '⚠️ 미설정'}")
-        st.write(f"- 분석 데이터: {len(df3):,} 건")
+        st.write("가구 실태 및 세부 정책 정밀도")
 
     st.markdown("---")
-    st.subheader("💡 연계 활용 시사점")
-    st.markdown("""
-    - **1단계 (수용성 파악):** `MULTI2_API_KEY`로 호출한 국민 수용성 조사를 통해 지역별 타깃 정책 수요 도출
-    - **2단계 (환경 파악):** `MULTI3_API_KEY` 데이터로 다문화가구 소득 및 자녀 양육 환경 정밀 분석
-    - **3단계 (적응 지원):** `MULTI1_API_KEY` 데이터로 청소년 정체성 형성 및 학교 적응 프로그램 연계
-    """)
+    st.subheader("🤖 Solar AI 기반 3개 조사 통합 질의")
+    user_q = st.text_input("3개 조사 전체를 바탕으로 종합 질의를 입력하세요:", placeholder="예: 3개 자료를 종합해서 볼 때, 정책적 시사점은 무엇인가요?")
+    
+    if st.button("확인하기", key="btn_p4"):
+        if user_q.strip():
+            with st.spinner("Solar AI가 3개 조사 자료를 종합 분석 중입니다..."):
+                answer = ask_solar_api(combined_context, user_q)
+            st.markdown("### 💬 AI 답변")
+            st.write(answer)
+        else:
+            st.warning("질문을 입력해주세요.")
